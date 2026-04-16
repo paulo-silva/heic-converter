@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: heic2jpg
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: heic2jpg
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: heic2jpg
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install libheif
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libheif-dev
+
+      - name: Build
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Create archive
+        id: archive
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          ARCHIVE_NAME="heic2jpg-v${VERSION}-${{ matrix.target }}"
+
+          mkdir -p dist
+          cd target/${{ matrix.target }}/release
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a ../../../dist/${ARCHIVE_NAME}.zip ${{ matrix.binary_name }}.exe
+            echo "archive_file=${ARCHIVE_NAME}.zip" >> $GITHUB_OUTPUT
+          else
+            tar czf ../../../dist/${ARCHIVE_NAME}.tar.gz ${{ matrix.binary_name }}
+            echo "archive_file=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_OUTPUT
+          fi
+
+          cd ../../../dist
+          shasum -a 256 ${ARCHIVE_NAME}.* > ${ARCHIVE_NAME}.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Consolidate artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## HEIC to JPG Converter v${{ steps.version.outputs.version }}
+
+            Fast HEIC to JPG converter with multi-core support and brightness adjustment.
+
+            ### Installation
+
+            #### Homebrew (macOS)
+            ```bash
+            brew install psilva/tap/heic2jpg
+            ```
+
+            #### Manual Installation
+            1. Download the archive for your platform
+            2. Extract: `tar xzf heic2jpg-*.tar.gz`
+            3. Move to PATH: `sudo mv heic2jpg /usr/local/bin/`
+            4. Make executable: `chmod +x /usr/local/bin/heic2jpg`
+
+            ### Quick Start
+            ```bash
+            # Convert single file
+            heic2jpg photo.heic
+
+            # Convert directory recursively
+            heic2jpg -r ~/Pictures/Photos
+
+            # Custom quality and brightness
+            heic2jpg -q 95 -b 1.2 -r ~/Pictures
+            ```
+
+            ### What's New
+            - Multi-core parallel processing
+            - Brightness adjustment for Display P3 → sRGB conversion
+            - Recursive directory traversal
+            - Progress bars with ETA
+            - Configurable JPEG quality
+
+            See [README.md](https://github.com/${{ github.repository }}/blob/main/README.md) for full documentation.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
